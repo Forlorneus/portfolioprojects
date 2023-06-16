@@ -90,7 +90,7 @@ plot(imputed_data)
 marketing_camp <- complete(imputed_data)
 ```
 
-here we chose m(nr of imputed datasets to generate) because the ratio of missing to complete data is quite small, so a higher-set parameter would only be redundant. Judging by the diagnostic plot, the mean and std. deviation seem to flatten after the specified iterations, which means the imputetation process has converged.
+here we chose m(nr of imputed datasets to generate) equal 3 because the ratio of missing to complete data is quite small, so a higher-set parameter would only be redundant. Judging by the diagnostic plot, the mean and std. deviation seem to flatten after the specified iterations, which means the imputetation process has converged.
 
 ## Dealing with outliers:
 
