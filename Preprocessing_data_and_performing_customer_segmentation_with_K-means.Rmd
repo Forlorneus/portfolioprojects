@@ -1,0 +1,263 @@
+---
+title: "Customer_Segmentation_on_cleaned_preprocessed_data"
+output: html_document
+date: "2023-06-12"
+---
+
+## Data Cleaning
+
+first, we're going to load all the needed libraries and our raw dataset
+
+```{r}
+library(tidyverse)
+library(corrplot)
+library(mice)
+library(caret)
+library(car)
+library(readxl)
+library(DescTools)
+library(robustHD)
+library(factoextra)
+marketing_camp <- read_excel("C:/Users/Lenovo/Desktop/kaggleproject/marketing_camp.xlsx")
+```
+
+let's take a closer look at the data
+
+```{r}
+attach(marketing_camp)
+glimpse(marketing_camp)
+
+unique(Education)
+unique(Marital_Status)
+```
+
+there are two values for this variable that are not helpful for analysis - "Absurd", "YOLO". There are also two variables that mean the same - "Along", "Single".
+
+```{r}
+marketing_camp$Marital_Status<- marketing_camp$Marital_Status %>%
+  recode("c('Single','Alone')='Single'")
+
+marketing_camp$Marital_Status<- marketing_camp$Marital_Status %>%
+  recode("c('YOLO','Absurd')='Unspecified'")
+```
+
+It would also be useful to turn the class of certain variables from 'character' to 'factor'
+
+```{r}
+marketing_camp <- marketing_camp %>%
+  mutate(across(where(is.character), as.factor))
+```
+
+Also, turning the class of DT_Customer from "character" to "date":
+
+```{r}
+marketing_camp$Dt_Customer <- as.Date(marketing_camp$Dt_Customer,
+                                       format = "%d-%m-%Y")
+```
+
+specifying the levels of our factors with multiple categories
+
+```{r}
+marketing_camp$Education <- factor((marketing_camp$Education),
+                                   levels = c("2n Cycle", "Basic", "Graduation", "Master", "PhD"))
+
+marketing_camp$Marital_Status <- factor((marketing_camp$Marital_Status),
+                                        levels = c("Single", "Divorced", "Widow", "Together", "Married", "Unspecified"))
+```
+
+## Dealing with duplicates:
+
+```{r}
+marketing_camp <- marketing_camp %>%
+  distinct()
+```
+
+No duplicates found.
+
+## Dealing with missing values:
+
+```{r}
+marketing_camp %>%
+  filter(!complete.cases(.)) %>%
+  view() 
+```
+
+Only 22 missing values found for a single variable - 'Income'. In order to preserve the randomnes and variability of the data, we're gonna use Predictive Mean Matching in the MICE algorithm as method of choice for imputing missing data.
+
+```{r}
+imputed_data <- mice(marketing_camp, m = 3, method = "pmm")
+plot(imputed_data)
+marketing_camp <- complete(imputed_data)
+```
+
+here we chose m(nr of imputed datasets to generate) because the ratio of missing to complete data is quite small, so a higher-set parameter would only be redundant. Judging by the diagnostic plot, the mean and std. deviation seem to flatten after the specified iterations, which means the imputetation process has converged.
+
+## Dealing with outliers:
+
+```{r}
+boxplot(marketing_camp$Income)
+
+boxplot(MntWines, MntFruits, MntMeatProducts,MntFishProducts, MntSweetProducts,MntGoldProds)
+
+boxplot(Kidhome, Teenhome)
+```
+
+having looked at the boxplots for numeric variables, we found out that some of them have obvious outliers. in order to make our estimates reliable, we're going to handle the outliers by the way of Winsorization (limiting extreme values to a certain percentile; In our case, it's a 90% winsorization).
+
+```{r}
+marketing_camp$Income <- Winsorize(marketing_camp$Income, probs = c(.05, .95))
+
+marketing_camp <- marketing_camp %>%
+  mutate(across(c(MntWines, MntFruits, MntMeatProducts,MntFishProducts, MntSweetProducts,MntGoldProds),
+                ~Winsorize(., probs = c(.05, .95))))
+
+```
+
+## Adding or removing variables:
+
+In order to add clarity to our data, we're going to add variables derived from existing ones:
+
+```{r}
+marketing_camp <- marketing_camp %>%
+  mutate(Age = 2021 - Year_Birth)
+
+marketing_camp <- marketing_camp %>%
+  mutate(customer_Tenure = 2021 - year(marketing_camp$Dt_Customer))
+
+marketing_camp <- marketing_camp %>%
+  mutate(
+    TotalAmountSpent = MntWines + MntFruits + MntMeatProducts+ MntFishProducts+ MntSweetProducts+ MntGoldProds,
+    TotalPurchases = NumWebPurchases, NumDealsPurchases, NumCatalogPurchases, NumStorePurchases)
+
+marketing_camp <- marketing_camp %>%
+  mutate(
+    RecencyRank = ntile(-Recency, 10),
+    AmountRank = ntile(TotalAmountSpent, 10),
+    FrequenceRank = ntile(TotalPurchases, 10)
+  )
+
+marketing_camp <- marketing_camp %>%
+  mutate(
+    SpendingScore = (RecencyRank + AmountRank + FrequenceRank) / 3 * 10
+  )
+
+```
+
+Since the new variable "Age" also includes outliers, we're going to assume the values beyond 90 are entry errors
+
+```{r}
+marketing_camp <- marketing_camp %>% 
+  filter(Age <= 90)
+```
+
+Also, for the sake of avoiding multicolinearity or clutter, we're going to remove certain variables:
+
+```{r}
+df <- marketing_camp %>%
+  select(-one_of("Z_Revenue", "Z_CostContact", "ID", "Year_Birth"))
+```
+
+## Calculating the correlation matrix
+
+```{r}
+cor_matrix <- cor(marketing_camp[, sapply(marketing_camp, is.numeric)])
+
+corrplot(cor_matrix)
+```
+
+As is evident from the correlations, temporal variables(recency, age, customer_tenure) tend to have little to no influence on other continuous data, which might be reason to believe the customer pool is pretty homogeneous in terms of age, tenure or even recency.
+
+```{r}
+marketing_camp %>% 
+  ggplot(aes(x = Marital_Status, y = Income)) +
+  geom_boxplot() +
+  labs(title = "Salary distribution by rank")
+
+
+```
+
+According to this plot, the income of each customer, which correlates greatly with consumption tends to have similar distributions for each marital status, - no signficant difference can be found.
+
+#### Next were gonna test whether, the special offers successfully target the high-income customers using linear regressiona analysis
+
+```{r}
+marketing_camp %>% 
+  lm(Income ~ AcceptedCmp1 + AcceptedCmp2 + AcceptedCmp3 + AcceptedCmp4 + AcceptedCmp5 + Response, data =.) %>% 
+  summary()
+```
+
+from the regression analysis, we can safely say 3 out of all 6 campaigns successfully targeted the high-income customers.
+
+## Segmentation based on k-means clustering
+
+Now, we're going to attempt to cluster the customers based on all the existing variables
+
+First we want to one-hot-encode categorical variables which are not binary
+
+```{r}
+columns_to_encode <- c("Education", "Marital_Status")
+df<- marketing_camp
+df1 <-  dummyVars(~., data = df[, columns_to_encode]) %>%
+  predict(newdata = df)
+df11 <- cbind(df, df1)
+```
+
+Next, we're scaling our variables, except for the ones that are binary, which don't need scaling.
+
+```{r}
+
+df11 <- df11 %>%
+  select(-one_of("Education", "Marital_Status", "Dt_Customer", "RecencyRank", "AmountRank", "FrequenceRank"))
+
+binary_cols <- c("Education.2n Cycle", "Education.Basic", "Education.Graduation","Education.Master",          
+ "Education.PhD", "Marital_Status.Single", "Marital_Status.Divorced", "Marital_Status.Widow",      
+ "Marital_Status.Together", "Marital_Status.Married", "Marital_Status.Unspecified", "Complain",
+ "AcceptedCmp1", "AcceptedCmp4", "AcceptedCmp3", "AcceptedCmp5", "AcceptedCmp2", "Response")
+
+scaled_df <- df11 %>%
+  mutate(across(!binary_cols, scale))
+
+```
+
+Now, we're looking to find the number of clusters to divide our records into using the "Elbow method". It seems 3 clusters would mean both high variance, and high ilustrative value for our research
+
+```{r}
+fviz_nbclust(scaled_df, FUN = hcut, method = "wss")
+```
+
+we're going to use the euclidean method to compute the distance between the datapoints in the distribution of our scaled variables.
+
+```{r}
+df_dist <- dist( scaled_df, method = "euclidean")
+
+kmout <- kmeans(df_dist, centers = 3, nstart= 100)
+
+```
+
+finally, we're including the cluster feature into the original dataset.
+
+```{r}
+df$cluster <- kmout$cluster
+```
+
+in order to observe the difference between each cluster, we're aggregating each one by the mean of each variable in our dataset.
+
+```{r}
+means_by_cluster <- aggregate(. ~ cluster, data = df, FUN = mean)
+```
+
+as we can see from this table, the clusters differ mostly in their spending score overall, which correlates with Income. Thus, high-income custommers (cluster 1) tend to make more purchases on the web, in comparison to the poorest cluster, 2: also, more purchases via catalogue, and store, and tends to make less webvisits on the company site.
+
+In addition, high-income customers tend to have fewer kids in general, and, based on the Recency feature, they're also more active as customers by a slight margin.
+
+```{r}
+df %>% 
+  ggplot(aes(x = Income, y = SpendingScore, color = factor(cluster))) +
+  geom_point() +
+  labs(x= "income",
+       y= "spending score", 
+       title= "income vs spending score")
+
+```
+
+This graph ilustrates the clusters as dependent on the relationship between spending score and income.
